@@ -16,12 +16,13 @@ The objective of this project is to build a graphical BMI Calculator application
 6. Added a semicircle BMI gauge with color bands and a moving needle.
 7. Used SQLite to store user records locally in `bmi_data.db`.
 8. Added a history table to view saved records for a selected user.
-9. Added delete functionality for removing selected records.
-10. Added CSV export for visible history records.
-11. Embedded a Matplotlib chart to display BMI trends over time.
-12. Added hover tooltips for BMI graph points using `mplcursors`.
-13. Added error handling with user-friendly popup messages.
-14. Added keyboard support so pressing Enter triggers BMI calculation.
+9. Added case-insensitive user history lookup so names like `Alice` and `alice` are grouped together.
+10. Added delete functionality for removing selected records.
+11. Added CSV export for visible history records.
+12. Embedded a Matplotlib chart to display BMI trends over time.
+13. Added hover tooltips for BMI graph points using `mplcursors`.
+14. Added error handling with user-friendly popup messages.
+15. Added keyboard support so pressing Enter triggers BMI calculation.
 
 ## Tools Used
 

@@ -44,6 +44,7 @@ class BMICalculatorApp(tk.Tk):
         self._initialize_database()
         self._build_ui()
         self.bind("<Return>", lambda _event: self.calculate_bmi())
+        self.after(100, self._draw_gauge)
 
     def _configure_style(self):
         self.configure(background=COLORS["app_bg"])
@@ -327,7 +328,6 @@ class BMICalculatorApp(tk.Tk):
         )
         self.gauge_canvas.grid(row=3, column=0, sticky="ew", pady=(24, 0))
         self.gauge_canvas.bind("<Configure>", lambda _event: self._draw_gauge())
-        self._draw_gauge()
 
     def _build_history_tab(self):
         self.history_tab.columnconfigure(0, weight=1)
@@ -440,7 +440,7 @@ class BMICalculatorApp(tk.Tk):
         if not 50 <= height_cm <= 300:
             raise ValueError("Height must be between 50 and 300 cm.")
 
-        return name, weight, height_cm
+        return self._normalize_name(name), weight, height_cm
 
     def calculate_bmi(self):
         try:
@@ -486,6 +486,11 @@ class BMICalculatorApp(tk.Tk):
         measured_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             with sqlite3.connect(DB_PATH) as connection:
+                existing_name = connection.execute(
+                    "SELECT name FROM bmi_records WHERE LOWER(name) = LOWER(?) ORDER BY id LIMIT 1",
+                    (result["name"],),
+                ).fetchone()
+                saved_name = existing_name[0] if existing_name else result["name"]
                 connection.execute(
                     """
                     INSERT INTO bmi_records
@@ -493,7 +498,7 @@ class BMICalculatorApp(tk.Tk):
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        result["name"],
+                        saved_name,
                         result["weight"],
                         result["height_cm"],
                         result["bmi"],
@@ -506,13 +511,18 @@ class BMICalculatorApp(tk.Tk):
             return
 
         messagebox.showinfo("Saved", "BMI record saved successfully.")
-        self.refresh_users(select_user=result["name"])
+        self.refresh_users(select_user=saved_name)
 
     def refresh_users(self, select_user=None):
         try:
             with sqlite3.connect(DB_PATH) as connection:
                 rows = connection.execute(
-                    "SELECT DISTINCT name FROM bmi_records ORDER BY name COLLATE NOCASE"
+                    """
+                    SELECT MIN(name)
+                    FROM bmi_records
+                    GROUP BY LOWER(name)
+                    ORDER BY LOWER(name)
+                    """
                 ).fetchall()
         except sqlite3.Error as exc:
             messagebox.showerror("Database Error", f"Could not load users.\n\n{exc}")
@@ -523,6 +533,15 @@ class BMICalculatorApp(tk.Tk):
 
         if select_user in users:
             self.user_filter_var.set(select_user)
+        elif select_user:
+            matching_user = next(
+                (user for user in users if user.lower() == select_user.lower()),
+                None,
+            )
+            if matching_user:
+                self.user_filter_var.set(matching_user)
+            elif users and self.user_filter_var.get() not in users:
+                self.user_filter_var.set(users[0])
         elif users and self.user_filter_var.get() not in users:
             self.user_filter_var.set(users[0])
         elif not users:
@@ -546,7 +565,7 @@ class BMICalculatorApp(tk.Tk):
                     """
                     SELECT id, name, weight, height_cm, bmi, category, measured_at
                     FROM bmi_records
-                    WHERE name = ?
+                    WHERE LOWER(name) = LOWER(?)
                     ORDER BY measured_at ASC, id ASC
                     """,
                     (user,),
@@ -800,6 +819,10 @@ class BMICalculatorApp(tk.Tk):
         max_bmi = 40
         value = max(min_bmi, min(bmi, max_bmi))
         return 180 - ((value - min_bmi) / (max_bmi - min_bmi) * 180)
+
+    @staticmethod
+    def _normalize_name(name):
+        return " ".join(part.capitalize() for part in name.split())
 
     @staticmethod
     def _classify_bmi(bmi):
