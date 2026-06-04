@@ -1,9 +1,12 @@
+import csv
+import math
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
+import mplcursors
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -20,6 +23,7 @@ class BMICalculatorApp(tk.Tk):
 
         self.last_result = None
         self.selected_record_id = None
+        self.graph_cursor = None
 
         self._configure_style()
         self._initialize_database()
@@ -130,6 +134,7 @@ class BMICalculatorApp(tk.Tk):
         actions.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(18, 0))
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
+        actions.columnconfigure(2, weight=1)
 
         ttk.Button(
             actions,
@@ -142,7 +147,13 @@ class BMICalculatorApp(tk.Tk):
             text="Save",
             style="Action.TButton",
             command=self.save_record,
-        ).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ).grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Button(
+            actions,
+            text="Clear",
+            style="Action.TButton",
+            command=self.clear_form,
+        ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
 
         result = ttk.LabelFrame(self.calculator_tab, text="BMI Result", padding=18)
         result.grid(row=1, column=1, sticky="nsew", padx=(10, 0))
@@ -164,6 +175,16 @@ class BMICalculatorApp(tk.Tk):
             text="Categories: Underweight <18.5, Normal 18.5-24.9, Overweight 25-29.9, Obese >=30",
             wraplength=360,
         ).grid(row=2, column=0, sticky="w", pady=(22, 0))
+
+        self.gauge_canvas = tk.Canvas(
+            result,
+            height=230,
+            background="#f7f9fb",
+            highlightthickness=0,
+        )
+        self.gauge_canvas.grid(row=3, column=0, sticky="ew", pady=(24, 0))
+        self.gauge_canvas.bind("<Configure>", lambda _event: self._draw_gauge())
+        self._draw_gauge()
 
     def _build_history_tab(self):
         self.history_tab.columnconfigure(0, weight=1)
@@ -188,6 +209,9 @@ class BMICalculatorApp(tk.Tk):
         ttk.Button(
             controls, text="Delete Record", command=self.delete_selected_record
         ).grid(row=0, column=3)
+        ttk.Button(controls, text="Export CSV", command=self.export_csv).grid(
+            row=0, column=4, padx=(8, 0)
+        )
 
         columns = ("id", "name", "weight", "height", "bmi", "category", "date")
         self.history_tree = ttk.Treeview(
@@ -285,7 +309,18 @@ class BMICalculatorApp(tk.Tk):
         self.bmi_value_var.set(f"{bmi:.2f}")
         self.category_var.set(category)
         self.category_label.configure(foreground=self._category_color(category))
+        self._draw_gauge(bmi)
         return self.last_result
+
+    def clear_form(self):
+        self.name_var.set("")
+        self.weight_var.set("")
+        self.height_var.set("")
+        self.bmi_value_var.set("--")
+        self.category_var.set("No result yet")
+        self.category_label.configure(foreground="#222222")
+        self.last_result = None
+        self._draw_gauge()
 
     def save_record(self):
         result = self.calculate_bmi()
@@ -412,7 +447,44 @@ class BMICalculatorApp(tk.Tk):
         self.selected_record_id = None
         self.refresh_users()
 
+    def export_csv(self):
+        records = [
+            self.history_tree.item(item_id, "values")
+            for item_id in self.history_tree.get_children()
+        ]
+        if not records:
+            messagebox.showwarning("No Records", "There are no visible records to export.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title="Export BMI History",
+            defaultextension=".csv",
+            filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+            initialfile="bmi_history.csv",
+        )
+        if not file_path:
+            return
+
+        headers = [
+            self.history_tree.heading(column, "text")
+            for column in self.history_tree["columns"]
+        ]
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8") as csv_file:
+                writer = csv.writer(csv_file)
+                writer.writerow(headers)
+                writer.writerows(records)
+        except OSError as exc:
+            messagebox.showerror("Export Error", f"Could not export CSV file.\n\n{exc}")
+            return
+
+        messagebox.showinfo("Export Complete", "Visible history records were exported successfully.")
+
     def _draw_graph(self, rows):
+        if self.graph_cursor is not None:
+            self.graph_cursor.remove()
+            self.graph_cursor = None
+
         self.ax.clear()
         self.ax.set_ylabel("BMI")
         self.ax.set_xlabel("Date of measurement")
@@ -437,9 +509,16 @@ class BMICalculatorApp(tk.Tk):
         if rows:
             dates = [datetime.strptime(row[6], "%Y-%m-%d %H:%M:%S") for row in rows]
             bmi_values = [row[4] for row in rows]
-            self.ax.plot(dates, bmi_values, marker="o", color="#1f6f8b", linewidth=2)
+            (line,) = self.ax.plot(
+                dates, bmi_values, marker="o", color="#1f6f8b", linewidth=2
+            )
             self.ax.set_title(f"BMI trend for {rows[0][1]}")
             self.figure.autofmt_xdate(rotation=25)
+            self.graph_cursor = mplcursors.cursor(line, hover=True)
+            self.graph_cursor.connect(
+                "add",
+                lambda selection: self._set_graph_tooltip(selection, rows),
+            )
         else:
             self.ax.set_title("No saved BMI records")
             self.ax.text(
@@ -453,6 +532,91 @@ class BMICalculatorApp(tk.Tk):
 
         self.figure.tight_layout()
         self.canvas.draw_idle()
+
+    def _set_graph_tooltip(self, selection, rows):
+        index = int(round(selection.index))
+        index = max(0, min(index, len(rows) - 1))
+        row = rows[index]
+        selection.annotation.set_text(
+            f"Date: {row[6]}\nBMI: {row[4]:.2f}\nCategory: {row[5]}"
+        )
+
+    def _draw_gauge(self, bmi=None):
+        if not hasattr(self, "gauge_canvas"):
+            return
+
+        canvas = self.gauge_canvas
+        canvas.delete("all")
+
+        width = max(canvas.winfo_width(), 340)
+        height = max(canvas.winfo_height(), 220)
+        margin = 28
+        cx = width / 2
+        cy = height - 34
+        radius = min((width - margin * 2) / 2, height - 70)
+        box = (cx - radius, cy - radius, cx + radius, cy + radius)
+
+        bands = (
+            (10, 18.5, "#4f86d7", "Under"),
+            (18.5, 25, "#2e9d57", "Normal"),
+            (25, 30, "#e0a12b", "Over"),
+            (30, 40, "#d2453d", "Obese"),
+        )
+        for start_value, end_value, color, _label in bands:
+            start_angle = self._bmi_to_angle(start_value)
+            end_angle = self._bmi_to_angle(end_value)
+            canvas.create_arc(
+                box,
+                start=end_angle,
+                extent=start_angle - end_angle,
+                style="arc",
+                width=24,
+                outline=color,
+            )
+
+        for value in (10, 18.5, 25, 30, 40):
+            angle = math.radians(self._bmi_to_angle(value))
+            inner = radius - 20
+            outer = radius + 2
+            x1 = cx + math.cos(angle) * inner
+            y1 = cy - math.sin(angle) * inner
+            x2 = cx + math.cos(angle) * outer
+            y2 = cy - math.sin(angle) * outer
+            canvas.create_line(x1, y1, x2, y2, fill="#4b5563", width=2)
+            label_radius = radius - 46
+            lx = cx + math.cos(angle) * label_radius
+            ly = cy - math.sin(angle) * label_radius
+            canvas.create_text(lx, ly, text=str(value), fill="#374151", font=("Segoe UI", 8))
+
+        canvas.create_text(
+            cx,
+            cy - radius - 24,
+            text="BMI Gauge",
+            fill="#1f2937",
+            font=("Segoe UI", 11, "bold"),
+        )
+
+        needle_value = 10 if bmi is None else max(10, min(bmi, 40))
+        needle_angle = math.radians(self._bmi_to_angle(needle_value))
+        needle_length = radius - 42
+        nx = cx + math.cos(needle_angle) * needle_length
+        ny = cy - math.sin(needle_angle) * needle_length
+        canvas.create_line(cx, cy, nx, ny, fill="#111827", width=4, capstyle="round")
+        canvas.create_oval(cx - 8, cy - 8, cx + 8, cy + 8, fill="#111827", outline="")
+        canvas.create_text(
+            cx,
+            cy + 18,
+            text="--" if bmi is None else f"{bmi:.2f}",
+            fill="#111827",
+            font=("Segoe UI", 12, "bold"),
+        )
+
+    @staticmethod
+    def _bmi_to_angle(bmi):
+        min_bmi = 10
+        max_bmi = 40
+        value = max(min_bmi, min(bmi, max_bmi))
+        return 180 - ((value - min_bmi) / (max_bmi - min_bmi) * 180)
 
     @staticmethod
     def _classify_bmi(bmi):
